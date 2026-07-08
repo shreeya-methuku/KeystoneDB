@@ -218,6 +218,9 @@ TEST(CompactionTest, ReopenAfterCompaction) {
         EXPECT_EQ(*result, val);
     }
 
+    // After reopen there may be a second SST from WAL replay; compact again
+    // and wait for it to settle.
+    db->compact();
     EXPECT_TRUE(wait_for_sst_count(dir.path, 1, 10000))
         << "Expected 1 SST file, got " << count_sst_files(dir.path);
 }
