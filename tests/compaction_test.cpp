@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include <thread>
 #include <unistd.h>
 
 namespace {
@@ -30,6 +31,15 @@ int count_sst_files(const std::string& dir) {
         if (entry.path().extension() == ".sst") n++;
     }
     return n;
+}
+
+bool wait_for_sst_count(const std::string& dir, int expected,
+                        int timeout_ms = 2000) {
+    for (int elapsed = 0; elapsed < timeout_ms; elapsed += 5) {
+        if (count_sst_files(dir) == expected) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return count_sst_files(dir) == expected;
 }
 }  // namespace
 
@@ -55,7 +65,8 @@ TEST(CompactionTest, TriggerAndReduction) {
     }
 
     db->compact();
-    EXPECT_EQ(count_sst_files(dir.path), 1);
+    EXPECT_TRUE(wait_for_sst_count(dir.path, 1))
+        << "Expected 1 SST file, got " << count_sst_files(dir.path);
 
     for (const auto& [key, val] : all) {
         auto result = db->get(key);
@@ -91,7 +102,8 @@ TEST(CompactionTest, OverwriteReclamation) {
         EXPECT_EQ(db->get(key), expected);
     }
 
-    ASSERT_EQ(count_sst_files(dir.path), 1);
+    ASSERT_TRUE(wait_for_sst_count(dir.path, 1))
+        << "Expected 1 SST file, got " << count_sst_files(dir.path);
 
     std::string sst_path;
     for (const auto& entry : std::filesystem::directory_iterator(dir.path)) {
@@ -206,5 +218,6 @@ TEST(CompactionTest, ReopenAfterCompaction) {
         EXPECT_EQ(*result, val);
     }
 
-    EXPECT_LE(count_sst_files(dir.path), 1);
+    EXPECT_TRUE(wait_for_sst_count(dir.path, 1, 10000))
+        << "Expected 1 SST file, got " << count_sst_files(dir.path);
 }
