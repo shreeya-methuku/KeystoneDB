@@ -14,6 +14,8 @@ namespace keystone {
 
 using coding::put_u32_le;
 using coding::get_u32_le;
+using coding::put_u64_le;
+using coding::get_u64_le;
 using io::write_fully;
 using io::read_fully;
 using io::durable_sync;
@@ -33,17 +35,18 @@ std::unique_ptr<WAL> WAL::open(const std::string& path, SyncMode mode) {
     return std::unique_ptr<WAL>(new WAL(fd, mode));
 }
 
-void WAL::append(RecType type, std::string_view key, std::string_view value) {
-    size_t body_len = 1 + 4 + 4 + key.size() + value.size();
+void WAL::append(RecType type, uint64_t seq, std::string_view key, std::string_view value) {
+    size_t body_len = 1 + 8 + 4 + 4 + key.size() + value.size();
     std::vector<uint8_t> buf(4 + body_len);
 
     uint8_t* body = buf.data() + 4;
     body[0] = static_cast<uint8_t>(type);
-    put_u32_le(body + 1, static_cast<uint32_t>(key.size()));
-    put_u32_le(body + 5, static_cast<uint32_t>(value.size()));
-    std::memcpy(body + 9, key.data(), key.size());
+    put_u64_le(body + 1, seq);
+    put_u32_le(body + 9, static_cast<uint32_t>(key.size()));
+    put_u32_le(body + 13, static_cast<uint32_t>(value.size()));
+    std::memcpy(body + 17, key.data(), key.size());
     if (!value.empty())
-        std::memcpy(body + 9 + key.size(), value.data(), value.size());
+        std::memcpy(body + 17 + key.size(), value.data(), value.size());
 
     put_u32_le(buf.data(), crc32(body, body_len));
 
@@ -60,20 +63,21 @@ void WAL::append_batch(const std::vector<Record>& records) {
 
     size_t total = 0;
     for (const auto& rec : records)
-        total += 4 + 1 + 4 + 4 + rec.key.size() + rec.value.size();
+        total += 4 + 1 + 8 + 4 + 4 + rec.key.size() + rec.value.size();
 
     std::vector<uint8_t> buf(total);
     size_t off = 0;
 
     for (const auto& rec : records) {
-        size_t body_len = 1 + 4 + 4 + rec.key.size() + rec.value.size();
+        size_t body_len = 1 + 8 + 4 + 4 + rec.key.size() + rec.value.size();
         uint8_t* body = buf.data() + off + 4;
         body[0] = static_cast<uint8_t>(rec.type);
-        put_u32_le(body + 1, static_cast<uint32_t>(rec.key.size()));
-        put_u32_le(body + 5, static_cast<uint32_t>(rec.value.size()));
-        std::memcpy(body + 9, rec.key.data(), rec.key.size());
+        put_u64_le(body + 1, rec.seq);
+        put_u32_le(body + 9, static_cast<uint32_t>(rec.key.size()));
+        put_u32_le(body + 13, static_cast<uint32_t>(rec.value.size()));
+        std::memcpy(body + 17, rec.key.data(), rec.key.size());
         if (!rec.value.empty())
-            std::memcpy(body + 9 + rec.key.size(), rec.value.data(),
+            std::memcpy(body + 17 + rec.key.size(), rec.value.data(),
                         rec.value.size());
         put_u32_le(buf.data() + off, crc32(body, body_len));
         off += 4 + body_len;
@@ -102,11 +106,12 @@ std::vector<WAL::Record> WAL::replay(const std::string& path) {
         if (!read_fully(fd, crc_buf, 4)) break;
         uint32_t stored_crc = get_u32_le(crc_buf);
 
-        uint8_t header[9];
-        if (!read_fully(fd, header, 9)) break;
+        uint8_t header[17];
+        if (!read_fully(fd, header, 17)) break;
 
-        uint32_t keylen = get_u32_le(header + 1);
-        uint32_t vallen = get_u32_le(header + 5);
+        uint64_t seq = get_u64_le(header + 1);
+        uint32_t keylen = get_u32_le(header + 9);
+        uint32_t vallen = get_u32_le(header + 13);
 
         if (keylen > 64u * 1024 * 1024 || vallen > 64u * 1024 * 1024) break;
 
@@ -115,16 +120,16 @@ std::vector<WAL::Record> WAL::replay(const std::string& path) {
         if (keylen > 0 && !read_fully(fd, key.data(), keylen)) break;
         if (vallen > 0 && !read_fully(fd, value.data(), vallen)) break;
 
-        size_t body_len = 9 + keylen + vallen;
+        size_t body_len = 17 + keylen + vallen;
         std::vector<uint8_t> body(body_len);
-        std::memcpy(body.data(), header, 9);
-        if (keylen > 0) std::memcpy(body.data() + 9, key.data(), keylen);
-        if (vallen > 0) std::memcpy(body.data() + 9 + keylen, value.data(), vallen);
+        std::memcpy(body.data(), header, 17);
+        if (keylen > 0) std::memcpy(body.data() + 17, key.data(), keylen);
+        if (vallen > 0) std::memcpy(body.data() + 17 + keylen, value.data(), vallen);
 
         if (crc32(body.data(), body_len) != stored_crc) break;
 
         records.push_back(
-            {static_cast<RecType>(header[0]), std::move(key), std::move(value)});
+            {static_cast<RecType>(header[0]), seq, std::move(key), std::move(value)});
     }
 
     ::close(fd);

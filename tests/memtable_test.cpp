@@ -12,11 +12,11 @@ using keystone::Memtable;
 
 TEST(MemtableTest, Ordering) {
     Memtable mt;
-    mt.put("delta", "4");
-    mt.put("alpha", "1");
-    mt.put("charlie", "3");
-    mt.put("bravo", "2");
-    mt.put("echo", "5");
+    mt.put("delta", "4", 1);
+    mt.put("alpha", "1", 2);
+    mt.put("charlie", "3", 3);
+    mt.put("bravo", "2", 4);
+    mt.put("echo", "5", 5);
 
     std::vector<std::string> keys;
     for (auto it = mt.begin(); it != mt.end(); ++it) {
@@ -30,8 +30,8 @@ TEST(MemtableTest, Ordering) {
 
 TEST(MemtableTest, Overwrite) {
     Memtable mt;
-    mt.put("key", "v1");
-    mt.put("key", "v2");
+    mt.put("key", "v1", 1);
+    mt.put("key", "v2", 2);
 
     std::string value;
     EXPECT_EQ(mt.lookup("key", &value), Memtable::Status::Found);
@@ -44,20 +44,20 @@ TEST(MemtableTest, TombstoneShadowing) {
 
     EXPECT_EQ(mt.lookup("ghost", &value), Memtable::Status::NotFound);
 
-    mt.put("key", "value");
-    mt.del("key");
+    mt.put("key", "value", 1);
+    mt.del("key", 2);
     EXPECT_EQ(mt.lookup("key", &value), Memtable::Status::Deleted);
 
-    mt.del("phantom");
+    mt.del("phantom", 3);
     EXPECT_EQ(mt.lookup("phantom", &value), Memtable::Status::Deleted);
 }
 
 TEST(MemtableTest, IteratorIncludesTombstones) {
     Memtable mt;
-    mt.put("a", "1");
-    mt.put("b", "2");
-    mt.put("c", "3");
-    mt.del("b");
+    mt.put("a", "1", 1);
+    mt.put("b", "2", 2);
+    mt.put("c", "3", 3);
+    mt.del("b", 4);
 
     std::vector<Memtable::Entry> entries;
     for (auto it = mt.begin(); it != mt.end(); ++it)
@@ -76,11 +76,11 @@ TEST(MemtableTest, ApproxBytesGrows) {
     Memtable mt;
     EXPECT_EQ(mt.approx_bytes(), 0u);
 
-    mt.put("key1", "value1");
+    mt.put("key1", "value1", 1);
     size_t after_first = mt.approx_bytes();
     EXPECT_GT(after_first, 0u);
 
-    mt.put("key2", "value2");
+    mt.put("key2", "value2", 2);
     EXPECT_GT(mt.approx_bytes(), after_first);
 }
 
@@ -92,6 +92,7 @@ TEST(MemtableTest, RandomizedOracle) {
     std::uniform_int_distribution<int> op_dist(0, 2);
     std::uniform_int_distribution<int> key_dist(0, 99);
     std::uniform_int_distribution<int> val_dist(0, 999);
+    uint64_t seq = 1;
 
     for (int i = 0; i < 5000; i++) {
         int op = op_dist(rng);
@@ -99,10 +100,10 @@ TEST(MemtableTest, RandomizedOracle) {
 
         if (op == 0) {
             std::string val = "val" + std::to_string(val_dist(rng));
-            mt.put(key, val);
+            mt.put(key, val, seq++);
             oracle[key] = val;
         } else if (op == 1) {
-            mt.del(key);
+            mt.del(key, seq++);
             oracle[key] = std::nullopt;
         } else {
             std::string val;

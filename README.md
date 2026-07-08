@@ -26,12 +26,13 @@ put k v   →  WAL (durable)  →  memtable (skiplist, in RAM)
 | **SSTables** | Immutable, sorted, block-based (~4 KB blocks) with a sparse index, a hand-built bloom filter, and a fixed 40-byte footer |
 | **Reads** | memtable → SSTables newest-first; bloom filters skip files that can't contain the key; binary-searched sparse index reads a single block, served from an LRU block cache |
 | **Range scans** | k-way merging iterator with newest-wins precedence and tombstone shadowing; index seek to the start key + block cache, so a scan is O(range + log n), not O(total data) |
-| **Compaction** | Background-thread, size-triggered full compaction on immutable version snapshots; obsolete files GC'd by `shared_ptr` refcount; safe tombstone dropping via the MANIFEST |
+| **Compaction** | Background-thread **leveled compaction** (L0..L6, ~10× per level, non-overlapping runs) on immutable version snapshots; recency resolved by sequence number; obsolete files GC'd by `shared_ptr` refcount; tombstones dropped at the bottom level via the MANIFEST |
 | **Durable writes** | Leader/follower **WAL group commit** — concurrent writers batch into one `fsync`; scales ~9× from 1→16 writers |
+| **MVCC snapshots** | Every write is seqno-stamped; `get_snapshot()` gives a consistent point-in-time view (reads see the newest version ≤ the snapshot's seqno); compaction retains versions any live snapshot still needs |
 | **Concurrency** | Multi-writer (group commit) / multi-reader + one background compactor; verified clean under ThreadSanitizer |
 | **Tested** | 56 unit tests (incl. randomized oracles), a concurrency stress test, and a crash torture test |
 
-**Non-goals:** transactions/MVCC, secondary indexes, column families, compression, and SQL are all out of scope.
+**Non-goals:** multi-key transactions, secondary indexes, column families, compression, and SQL are all out of scope.
 
 ## Quick start
 
@@ -99,13 +100,13 @@ db->scan("a", "m", [](std::string_view k, std::string_view v) {
 
 ### Compaction
 
-Flushing produces many small SSTables; left unchecked they slow reads and waste space on superseded values. When the live SSTable count reaches the trigger (default 4), a **background thread** merges them:
+Flushing produces many small SSTables; left unchecked they slow reads and waste space on superseded values. KeystoneDB uses **leveled compaction** (RocksDB/LevelDB-style): SSTables live in levels **L0..L6**, each ~10× the previous. L0 files come straight from flushes and may overlap; every level ≥ 1 holds files with **non-overlapping**, sorted key ranges. A **background thread** runs the merges:
 
-- It takes an **immutable snapshot** of the current file set and performs the entire k-way merge *without holding any lock*, so reads and writes proceed unblocked.
-- On completion it commits under a short lock: append a MANIFEST snapshot (the atomic commit point), swap in a new immutable `Version`, and mark the input SSTables obsolete.
+- When L0 reaches the trigger (default 4 files), it merges all of L0 with the overlapping L1 files into new non-overlapping L1 files. When a level exceeds its size limit, it merges one file down into the overlapping files of the next level. Because each level is ~10× larger, a byte is rewritten a bounded number of times per level — **write amplification stays bounded as the dataset grows**, instead of rewriting everything on every compaction.
+- The heavy k-way merge runs on an **immutable snapshot without holding any lock**; the commit (append a MANIFEST snapshot — the atomic commit point — and swap in a new immutable `Version`) happens under a short lock.
 - Obsolete files are unlinked only when their reference count hits zero (`shared_ptr`), so a reader mid-scan on an old snapshot is never pulled out from under.
 
-Because the MANIFEST commit is atomic, a full compaction can **drop tombstones** safely — the merged file becomes the oldest, so no older file exists to resurrect a deleted key.
+Cross-level recency is resolved by **sequence number** (a higher `seq` always wins), not by file position — which is what makes partial, level-by-level merges correct. Tombstones and superseded versions are dropped only when a compaction reaches the **bottommost populated level**, where no older version can survive elsewhere, so a deleted key can never resurrect.
 
 ### Concurrency model
 
@@ -133,7 +134,7 @@ See [`docs/FORMAT.md`](docs/FORMAT.md) for the exact byte layouts. In brief:
 
 - **WAL record:** `[crc32][type][keylen][vallen][key][value]` — CRC covers everything after itself.
 - **SSTable:** `[data blocks][index block][bloom block][footer]`; each data-block entry is `[tag][keylen][vallen][key][value]` (tag 1 = tombstone). The fixed 40-byte footer holds `index_offset`, `bloom_offset`, `entry_count`, a format version, and a magic number, read first by seeking to `end − 40`.
-- **MANIFEST:** an append-only, CRC32-framed log; each record is a full snapshot of the live SSTable numbers in recency order.
+- **MANIFEST:** an append-only, CRC32-framed log; each record is a full snapshot of the live files as `(number, level, smallest_key, largest_key)` entries, so the leveled layout is restored on open.
 
 ## Project layout
 
@@ -248,7 +249,7 @@ python3 bench/plot.py          # optional: bench/throughput.png, bench/latency.p
 
 - ~~**WAL group commit**~~ — **done.** Multiple concurrent writers batch into a single fsync; 16 writers reach ~9× single-writer throughput.
 - ~~**Fast scans**~~ — **done.** Index seek to the start key + an LRU block cache took scans from O(total data) to O(range + log n) (~395 → ~6,300 scans/s), and the scan now merges lock-free off a memtable snapshot.
-- **Leveled compaction** — the current full/size-tiered compaction has high write amplification; leveled compaction (à la LevelDB/RocksDB) would bound it, and improve point-read *hit* latency by reducing the number of overlapping SSTables searched.
+- ~~**Leveled compaction**~~ — **done.** L0..L6 with non-overlapping runs and seqno-resolved recency bounds write amplification and reduces the number of overlapping SSTables a point read must search.
 - **Per-block SSTable checksums** — the WAL and MANIFEST are CRC32-checked, but SSTable data blocks are not, so a bit-flip in a block is currently undetected. Add a per-block CRC verified on read.
-- **Sequence numbers + MVCC snapshots** — tag each write with a monotonic seqno for consistent read snapshots (and as the prerequisite for correct leveled compaction).
+- ~~**Sequence numbers + MVCC snapshots**~~ — **done.** Every write is seqno-stamped; `get_snapshot()` gives a consistent point-in-time view, and compaction retains versions live snapshots still need.
 - **Block compression** (e.g. LZ4/Snappy) and **bounded recovery** — checkpoint the MANIFEST periodically so it doesn't grow unbounded.

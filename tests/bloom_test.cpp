@@ -95,7 +95,8 @@ TEST(BloomTest, SSTableIntegration) {
             char val[32];
             std::snprintf(val, sizeof(val), "val_%04d", static_cast<int>(i));
             bool tombstone = (i % 50 == 0 && i > 0);
-            writer.add(keys[i], tombstone ? "" : val, tombstone);
+            writer.add(keys[i], tombstone ? "" : val, tombstone,
+                        static_cast<uint64_t>(i + 1));
         }
         writer.finish();
         keystone::SSTableWriter::install(writer.temp_path(), path, dir.path);

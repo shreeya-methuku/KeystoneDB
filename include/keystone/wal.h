@@ -16,12 +16,13 @@ class WAL {
 public:
     static std::unique_ptr<WAL> open(const std::string& path, SyncMode mode);
 
-    void append(RecType type, std::string_view key, std::string_view value);
+    void append(RecType type, uint64_t seq, std::string_view key, std::string_view value);
     void sync();
     uint64_t fsync_count() const { return fsync_count_.load(std::memory_order_relaxed); }
 
     struct Record {
         RecType type;
+        uint64_t seq;
         std::string key;
         std::string value;
     };

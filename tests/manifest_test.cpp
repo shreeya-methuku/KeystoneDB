@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include <thread>
 #include <unistd.h>
 
 namespace {
@@ -25,6 +26,23 @@ struct TempDir {
     }
     ~TempDir() { std::filesystem::remove_all(path); }
 };
+
+int count_sst_files(const std::string& dir) {
+    int n = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.path().extension() == ".sst") n++;
+    }
+    return n;
+}
+
+bool wait_for_sst_count(const std::string& dir, int expected,
+                        int timeout_ms = 2000) {
+    for (int elapsed = 0; elapsed < timeout_ms; elapsed += 5) {
+        if (count_sst_files(dir) == expected) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return count_sst_files(dir) == expected;
+}
 }  // namespace
 
 // ── Manifest unit tests ─────────────────────────────────────────────────────
@@ -35,14 +53,18 @@ TEST(ManifestTest, RoundTrip) {
 
     {
         auto m = keystone::Manifest::open(path);
-        m->append_snapshot({1, 2, 3});
-        m->append_snapshot({4, 5});
+        m->append_snapshot({{1,0,"a","c"}, {2,0,"d","f"}, {3,1,"a","f"}});
+        m->append_snapshot({{4,1,"a","d"}, {5,1,"e","h"}});
     }
 
     auto live = keystone::Manifest::load_latest(path);
     ASSERT_EQ(live.size(), 2u);
-    EXPECT_EQ(live[0], 4);
-    EXPECT_EQ(live[1], 5);
+    EXPECT_EQ(live[0].number, 4);
+    EXPECT_EQ(live[0].level, 1);
+    EXPECT_EQ(live[0].smallest_key, "a");
+    EXPECT_EQ(live[0].largest_key, "d");
+    EXPECT_EQ(live[1].number, 5);
+    EXPECT_EQ(live[1].level, 1);
 }
 
 TEST(ManifestTest, TornTail) {
@@ -51,7 +73,7 @@ TEST(ManifestTest, TornTail) {
 
     {
         auto m = keystone::Manifest::open(path);
-        m->append_snapshot({10, 20, 30});
+        m->append_snapshot({{10,0,"a","b"}, {20,1,"c","d"}, {30,1,"e","f"}});
     }
 
     {
@@ -62,9 +84,9 @@ TEST(ManifestTest, TornTail) {
 
     auto live = keystone::Manifest::load_latest(path);
     ASSERT_EQ(live.size(), 3u);
-    EXPECT_EQ(live[0], 10);
-    EXPECT_EQ(live[1], 20);
-    EXPECT_EQ(live[2], 30);
+    EXPECT_EQ(live[0].number, 10);
+    EXPECT_EQ(live[1].number, 20);
+    EXPECT_EQ(live[2].number, 30);
 }
 
 TEST(ManifestTest, EmptyFile) {
@@ -85,15 +107,15 @@ TEST(ManifestTest, MultipleSnapshots) {
 
     {
         auto m = keystone::Manifest::open(path);
-        m->append_snapshot({1});
-        m->append_snapshot({1, 2});
-        m->append_snapshot({1, 2, 3});
-        m->append_snapshot({5});
+        m->append_snapshot({{1,0,"a","z"}});
+        m->append_snapshot({{1,0,"a","m"}, {2,0,"n","z"}});
+        m->append_snapshot({{1,0,"a","m"}, {2,0,"n","z"}, {3,1,"a","z"}});
+        m->append_snapshot({{5,1,"a","z"}});
     }
 
     auto live = keystone::Manifest::load_latest(path);
     ASSERT_EQ(live.size(), 1u);
-    EXPECT_EQ(live[0], 5);
+    EXPECT_EQ(live[0].number, 5);
 }
 
 // ── Tombstone dropping ──────────────────────────────────────────────────────
@@ -116,6 +138,9 @@ TEST(ManifestDBTest, TombstoneDropped) {
     db->compact();
 
     EXPECT_EQ(db->get("key_A"), std::nullopt);
+
+    EXPECT_TRUE(wait_for_sst_count(dir.path, 1))
+        << "Expected 1 SST file, got " << count_sst_files(dir.path);
 
     // Verify the merged SSTable contains NO entry for key_A
     std::string sst_file;
@@ -163,7 +188,7 @@ TEST(ManifestDBTest, OrphanCleanup) {
     std::string orphan_path = dir.path + "/999999.sst";
     {
         keystone::SSTableWriter writer(orphan_path);
-        writer.add("orphan_key", "orphan_value", false);
+        writer.add("orphan_key", "orphan_value", false, 1);
         writer.finish();
         keystone::SSTableWriter::install(writer.temp_path(), orphan_path,
                                          dir.path);
@@ -181,7 +206,7 @@ TEST(ManifestDBTest, OrphanCleanup) {
 
 // ── Manifest-driven recency ─────────────────────────────────────────────────
 
-TEST(ManifestDBTest, ManifestDrivenRecency) {
+TEST(ManifestDBTest, SeqnoRecencyOverridesManifestOrder) {
     TempDir dir;
     keystone::Options opts;
     opts.flush_threshold_bytes = 4 * 1024 * 1024;
@@ -191,24 +216,22 @@ TEST(ManifestDBTest, ManifestDrivenRecency) {
     {
         auto db = keystone::DB::open(dir.path, opts);
         db->put("key", "first");
-        db->flush();   // 000001.sst
+        db->flush();   // 000001.sst (lower seqno)
         db->put("key", "second");
-        db->flush();   // 000002.sst
+        db->flush();   // 000002.sst (higher seqno)
     }
 
     // Rewrite MANIFEST with reversed order: [2, 1]
-    // In MANIFEST order, SSTable 1 is at the BACK (newest)
+    // Both at L0 — seqno should determine recency, not manifest order
     std::filesystem::remove(dir.path + "/MANIFEST");
     {
         auto m = keystone::Manifest::open(dir.path + "/MANIFEST");
-        m->append_snapshot({2, 1});
+        m->append_snapshot({{2, 0, "key", "key"}, {1, 0, "key", "key"}});
     }
 
-    // Reopen
+    // Reopen — seqno-based recency: SSTable 2 has higher seqno → "second" wins
     auto db = keystone::DB::open(dir.path, opts);
-    // MANIFEST says [2, 1]: back=1 is newest → key="first"
-    // File-number ordering would say 2>1 → key="second"
-    EXPECT_EQ(db->get("key"), "first");
+    EXPECT_EQ(db->get("key"), "second");
 }
 
 // ── Correctness oracle with tombstone dropping ──────────────────────────────

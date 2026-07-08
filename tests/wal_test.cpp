@@ -41,23 +41,26 @@ TEST(WALTest, AppendAndReplay) {
 
     {
         auto wal = keystone::WAL::open(wal_path, keystone::SyncMode::EveryWrite);
-        wal->append(keystone::RecType::Put, "key1", "val1");
-        wal->append(keystone::RecType::Put, "key2", "val2");
-        wal->append(keystone::RecType::Delete, "key1", "");
+        wal->append(keystone::RecType::Put, 1, "key1", "val1");
+        wal->append(keystone::RecType::Put, 2, "key2", "val2");
+        wal->append(keystone::RecType::Delete, 3, "key1", "");
     }
 
     auto records = keystone::WAL::replay(wal_path);
     ASSERT_EQ(records.size(), 3u);
 
     EXPECT_EQ(records[0].type, keystone::RecType::Put);
+    EXPECT_EQ(records[0].seq, 1u);
     EXPECT_EQ(records[0].key, "key1");
     EXPECT_EQ(records[0].value, "val1");
 
     EXPECT_EQ(records[1].type, keystone::RecType::Put);
+    EXPECT_EQ(records[1].seq, 2u);
     EXPECT_EQ(records[1].key, "key2");
     EXPECT_EQ(records[1].value, "val2");
 
     EXPECT_EQ(records[2].type, keystone::RecType::Delete);
+    EXPECT_EQ(records[2].seq, 3u);
     EXPECT_EQ(records[2].key, "key1");
     EXPECT_EQ(records[2].value, "");
 }
@@ -89,8 +92,8 @@ TEST(WALTest, TornTail) {
 
     {
         auto wal = keystone::WAL::open(wal_path, keystone::SyncMode::EveryWrite);
-        wal->append(keystone::RecType::Put, "key1", "val1");
-        wal->append(keystone::RecType::Put, "key2", "val2");
+        wal->append(keystone::RecType::Put, 1, "key1", "val1");
+        wal->append(keystone::RecType::Put, 2, "key2", "val2");
     }
 
     {
@@ -110,18 +113,18 @@ TEST(WALTest, CRCCorruption) {
 
     {
         auto wal = keystone::WAL::open(wal_path, keystone::SyncMode::EveryWrite);
-        wal->append(keystone::RecType::Put, "key1", "val1");
-        wal->append(keystone::RecType::Put, "key2", "val2");
-        wal->append(keystone::RecType::Put, "key3", "val3");
+        wal->append(keystone::RecType::Put, 1, "key1", "val1");
+        wal->append(keystone::RecType::Put, 2, "key2", "val2");
+        wal->append(keystone::RecType::Put, 3, "key3", "val3");
     }
 
-    // Record 1 is 13 + 4 + 4 = 21 bytes.  Record 2 body starts at byte 25.
+    // Record 1 is 21 + 4 + 4 = 29 bytes.  Record 2 body starts at byte 33.
     std::string content;
     {
         std::ifstream ifs(wal_path, std::ios::binary);
         content.assign(std::istreambuf_iterator<char>(ifs), {});
     }
-    content[25] = ~content[25];
+    content[33] = ~content[33];
     {
         std::ofstream ofs(wal_path, std::ios::binary | std::ios::trunc);
         ofs.write(content.data(), static_cast<std::streamsize>(content.size()));

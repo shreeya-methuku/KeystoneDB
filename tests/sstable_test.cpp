@@ -42,8 +42,9 @@ TEST(SSTableTest, RoundTrip) {
 
     {
         keystone::SSTableWriter writer(path);
+        uint64_t seq = 1;
         for (const auto& e : entries)
-            writer.add(e.k, e.v, e.t);
+            writer.add(e.k, e.v, e.t, seq++);
         writer.finish();
         keystone::SSTableWriter::install(writer.temp_path(), path, dir.path);
     }
@@ -71,7 +72,7 @@ TEST(SSTableTest, MultiBlock) {
             char key[32], val[32];
             std::snprintf(key, sizeof(key), "key_%04d", n);
             std::snprintf(val, sizeof(val), "value_%04d", n);
-            writer.add(key, val, false);
+            writer.add(key, val, false, static_cast<uint64_t>(n + 1));
         }
         writer.finish();
         keystone::SSTableWriter::install(writer.temp_path(), path, dir.path);
@@ -103,7 +104,7 @@ TEST(SSTableTest, BadMagic) {
 
     {
         keystone::SSTableWriter writer(path);
-        writer.add("key", "value", false);
+        writer.add("key", "value", false, 1);
         writer.finish();
         keystone::SSTableWriter::install(writer.temp_path(), path, dir.path);
     }
@@ -121,6 +122,64 @@ TEST(SSTableTest, BadMagic) {
     }
 
     EXPECT_THROW(keystone::SSTable::open(path), std::runtime_error);
+}
+
+TEST(SSTableTest, BlockChecksumRoundTrip) {
+    TempDir dir;
+    std::string path = dir.path + "/checksum.sst";
+
+    std::vector<std::pair<std::string, std::string>> entries;
+    {
+        keystone::SSTableWriter writer(path);
+        for (int i = 0; i < 200; i++) {
+            char key[32], val[64];
+            std::snprintf(key, sizeof(key), "ck_%04d", i);
+            std::snprintf(val, sizeof(val), "cv_%04d", i);
+            writer.add(key, val, false, static_cast<uint64_t>(i + 1));
+            entries.emplace_back(key, val);
+        }
+        writer.finish();
+        keystone::SSTableWriter::install(writer.temp_path(), path, dir.path);
+    }
+
+    auto sst = keystone::SSTable::open(path);
+    EXPECT_GT(sst->block_count(), 1u);
+
+    for (const auto& [k, v] : entries) {
+        auto r = sst->get(k);
+        ASSERT_EQ(r.status, keystone::SSTable::LookupStatus::Found) << k;
+        EXPECT_EQ(r.value, v);
+    }
+}
+
+TEST(SSTableTest, BlockChecksumCorruptionDetected) {
+    TempDir dir;
+    std::string path = dir.path + "/corrupt.sst";
+
+    {
+        keystone::SSTableWriter writer(path);
+        for (int i = 0; i < 200; i++) {
+            char key[32], val[64];
+            std::snprintf(key, sizeof(key), "dk_%04d", i);
+            std::snprintf(val, sizeof(val), "dv_%04d", i);
+            writer.add(key, val, false, static_cast<uint64_t>(i + 1));
+        }
+        writer.finish();
+        keystone::SSTableWriter::install(writer.temp_path(), path, dir.path);
+    }
+
+    {
+        std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+        f.seekp(16);
+        char byte;
+        f.read(&byte, 1);
+        f.seekp(16);
+        byte ^= 0xFF;
+        f.write(&byte, 1);
+    }
+
+    auto sst = keystone::SSTable::open(path);
+    EXPECT_THROW(sst->get("dk_0000"), std::runtime_error);
 }
 
 // ── DB + flush integration tests ─────────────────────────────────────────────

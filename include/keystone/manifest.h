@@ -6,13 +6,20 @@
 
 namespace keystone {
 
+struct ManifestEntry {
+    int number;
+    int level;
+    std::string smallest_key;
+    std::string largest_key;
+};
+
 class Manifest {
 public:
     static std::unique_ptr<Manifest> open(const std::string& path);
 
-    void append_snapshot(const std::vector<int>& live_numbers);
+    void append_snapshot(const std::vector<ManifestEntry>& files);
 
-    static std::vector<int> load_latest(const std::string& path);
+    static std::vector<ManifestEntry> load_latest(const std::string& path);
 
     ~Manifest();
 

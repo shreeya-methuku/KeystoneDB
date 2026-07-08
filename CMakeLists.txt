@@ -33,7 +33,10 @@ add_executable(keystone_tests
   tests/compaction_test.cpp
   tests/manifest_test.cpp
   tests/concurrency_test.cpp
-  tests/group_commit_test.cpp)
+  tests/group_commit_test.cpp
+  tests/seqno_test.cpp
+  tests/leveled_test.cpp
+  tests/mvcc_test.cpp)
 target_link_libraries(keystone_tests PRIVATE keystone GTest::gtest_main)
 
 include(GoogleTest)
