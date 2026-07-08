@@ -52,6 +52,12 @@ option(KEYSTONE_BENCH "Build the SQLite comparison benchmark" ON)
 if(KEYSTONE_BENCH)
     find_package(SQLite3)
     if(SQLite3_FOUND)
+        if(NOT TARGET SQLite3::SQLite3)
+            add_library(SQLite3::SQLite3 IMPORTED INTERFACE)
+            set_target_properties(SQLite3::SQLite3 PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${SQLite3_INCLUDE_DIRS}"
+                INTERFACE_LINK_LIBRARIES "${SQLite3_LIBRARIES}")
+        endif()
         add_executable(bench bench/bench.cpp)
         target_link_libraries(bench PRIVATE keystone SQLite3::SQLite3)
         target_compile_options(bench PRIVATE -O2)
