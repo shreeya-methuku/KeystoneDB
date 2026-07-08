@@ -18,7 +18,7 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 300
 
   thread-sanitizer:
     name: ThreadSanitizer

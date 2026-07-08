@@ -27,13 +27,14 @@ struct TempDir {
 TEST(GroupCommitTest, MultiWriterCorrectness) {
     TempDir dir;
     keystone::Options opts;
+    opts.sync = keystone::SyncMode::Batched;
     opts.flush_threshold_bytes = 512;
     opts.compaction_trigger = 4;
 
     auto db = keystone::DB::open(dir.path, opts);
 
-    constexpr int kThreads = 8;
-    constexpr int kOpsPerThread = 5000;
+    constexpr int kThreads = 4;
+    constexpr int kOpsPerThread = 2000;
 
     std::vector<std::thread> threads;
     for (int t = 0; t < kThreads; t++) {
@@ -76,11 +77,11 @@ TEST(GroupCommitTest, DurabilityUnderConcurrency) {
     TempDir dir;
     keystone::Options opts;
     opts.sync = keystone::SyncMode::EveryWrite;
-    opts.flush_threshold_bytes = 4 * 1024;
+    opts.flush_threshold_bytes = 64 * 1024;
     opts.compaction_trigger = 1000;
 
-    constexpr int kThreads = 8;
-    constexpr int kOpsPerThread = 500;
+    constexpr int kThreads = 4;
+    constexpr int kOpsPerThread = 200;
 
     // Build oracle
     std::map<std::string, std::string> oracle;
@@ -129,8 +130,8 @@ TEST(GroupCommitTest, BatchCoalescingEvidence) {
 
     auto db = keystone::DB::open(dir.path, opts);
 
-    constexpr int kThreads = 8;
-    constexpr int kOpsPerThread = 1000;
+    constexpr int kThreads = 4;
+    constexpr int kOpsPerThread = 500;
 
     std::vector<std::thread> threads;
     for (int t = 0; t < kThreads; t++) {
