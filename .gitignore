@@ -1,0 +1,9 @@
+build/
+build_*/
+*.o
+*.sst
+*.wal
+*.log
+.DS_Store
+.claude/
+MANIFEST

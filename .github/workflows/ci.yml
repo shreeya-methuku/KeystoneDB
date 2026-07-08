@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libsqlite3-dev
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  thread-sanitizer:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libsqlite3-dev
+      - name: Configure (TSan)
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -B build_tsan -DKEYSTONE_TSAN=ON -DKEYSTONE_BENCH=OFF
+      - name: Build (TSan)
+        run: cmake --build build_tsan -j --target keystone_tests
+      - name: Run concurrency-sensitive tests under TSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: ./build_tsan/keystone_tests --gtest_filter=Concurrency*:Scan*:Compaction*:Manifest*
+
+  torture:
+    name: Crash torture test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ python3
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DKEYSTONE_BENCH=OFF
+      - name: Build torture tool
+        run: cmake --build build -j --target torture
+      - name: Run torture (30 kill -9 cycles)
+        run: python3 tools/torture.py 30
