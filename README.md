@@ -1,7 +1,6 @@
 # KeystoneDB
 
-<!-- After pushing to GitHub, replace <your-username> below so the badge renders. -->
-![CI](https://github.com/<your-username>/KeystoneDB/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/shreeya-methuku/KeystoneDB/actions/workflows/ci.yml/badge.svg)
 
 KeystoneDB is an embedded **LSM-tree key-value storage engine** written from scratch in C++17. It offers a simple `put` / `get` / `del` / `scan` API backed by a write-ahead log, sorted string tables (SSTables) with sparse indexes and bloom filters, and background compaction. It is designed for single-process embedded use: link it as a static library and point it at a directory.
 
