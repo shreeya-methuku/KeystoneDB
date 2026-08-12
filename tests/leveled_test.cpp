@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <random>
