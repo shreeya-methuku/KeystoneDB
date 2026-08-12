@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "keystone/db.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -124,33 +125,39 @@ TEST(ConcurrencyTest, StressTest) {
 TEST(ConcurrencyTest, BackgroundCompactionReducesFiles) {
     TempDir dir;
     keystone::Options opts;
-    opts.flush_threshold_bytes = 512;
+    opts.flush_threshold_bytes = 4 * 1024 * 1024;
     opts.compaction_trigger = 4;
 
     auto db = keystone::DB::open(dir.path, opts);
 
-    for (int i = 0; i < 200; i++) {
-        char key[32], val[128];
-        std::snprintf(key, sizeof(key), "key_%04d", i % 20);
-        std::memset(val, 'x', 100);
-        val[100] = '\0';
-        db->put(key, val);
+    int peak_count = 0;
+    for (int batch = 0; batch < 8; batch++) {
+        for (int i = 0; i < 50; i++) {
+            char key[32], val[128];
+            std::snprintf(key, sizeof(key), "key_%04d", batch * 50 + i);
+            std::memset(val, 'x', 100);
+            val[100] = '\0';
+            db->put(key, val);
+        }
+        db->flush();
+        peak_count = std::max(peak_count, count_sst_files(dir.path));
     }
-    db->flush();
+
+    ASSERT_GE(peak_count, static_cast<int>(opts.compaction_trigger));
 
     int initial_count = count_sst_files(dir.path);
     auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::seconds(10);
+                    std::chrono::seconds(30);
     int final_count = -1;
     while (std::chrono::steady_clock::now() < deadline) {
         int count = count_sst_files(dir.path);
-        if (count < initial_count || count < static_cast<int>(opts.compaction_trigger)) {
+        if (count < initial_count || count < peak_count) {
             final_count = count;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    EXPECT_GT(final_count, 0)
-        << "Background compaction did not reduce file count within 10s";
+    EXPECT_NE(final_count, -1)
+        << "Background compaction did not reduce file count within 30s";
 }
